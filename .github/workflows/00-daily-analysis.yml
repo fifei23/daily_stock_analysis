@@ -36,9 +36,12 @@ concurrency:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    # Pages 发布需要向 gh-pages 分支推送的写权限
+    permissions:
+      contents: write
     # 配置已硬编码进本文件 / 走 Secrets，无需建同名 Environment。
-    # 添加超时限制，防止任务卡死
-    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '30') }}
+    # 添加超时限制，防止任务卡死（30 只 ETF 约需 35–40 分钟，留足余量）
+    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '120') }}
     
     steps:
       - name: 随机延迟（避免固定时间访问）
@@ -537,6 +540,20 @@ jobs:
             python main.py $FORCE_RUN_ARG
           fi
       
+      - name: 生成看板与报告
+        if: always()
+        continue-on-error: true
+        run: |
+          echo "📈 生成 HTML 看板与 Markdown 报告..."
+          python dashboard.py || echo "⚠️ dashboard.py 执行失败（跳过）"
+          python export_report.py || echo "⚠️ export_report.py 执行失败（跳过）"
+          TODAY=$(date +%Y%m%d)
+          if [ -f "reports/dashboard_${TODAY}.html" ]; then
+            cp "reports/dashboard_${TODAY}.html" "reports/index.html"
+            echo "✅ 已生成 index.html（今日看板）"
+          fi
+          ls -la reports/ 2>/dev/null || true
+      
       - name: 上传分析报告
         uses: actions/upload-artifact@v6
         if: always()
@@ -565,3 +582,16 @@ jobs:
             echo "📜 最近日志（最后 30 行）:"
             tail -30 logs/stock_analysis_*.log 2>/dev/null || echo "无日志"
           fi
+
+      - name: 发布到 GitHub Pages
+        if: always() && hashFiles('reports/dashboard_*.html') != ''
+        continue-on-error: true
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./reports
+          publish_branch: gh-pages
+          keep_files: false
+          user_name: github-actions[bot]
+          user_email: github-actions[bot]@users.noreply.github.com
+          commit_message: "chore: 更新每日分析看板 (${{ github.run_number }})"
