@@ -12,6 +12,7 @@ A股自选股智能分析系统 - 搜索服务模块
 """
 
 import logging
+import os
 import multiprocessing
 import re
 import threading
@@ -2220,6 +2221,98 @@ class SearXNGSearchProvider(BaseSearchProvider):
         )
 
 
+class AkShareNewsProvider(BaseSearchProvider):
+    """
+    AkShare 免费个股新闻源（免 key，零成本）。
+
+    通过 akshare 的 stock_news_em 接口获取东方财富个股新闻，
+    作为新闻搜索的兜底/补充情报源：当 Tavily 等付费源额度用尽或无直接命中时，
+    仍能提供 A 股/ETF 的免费个股新闻，直接注入分析的新闻面。
+    """
+
+    def __init__(self):
+        # 免 key，传入占位 key 以满足基类（实际不使用）
+        super().__init__(api_keys=["__akshare_free__"], name="AkShareNews")
+
+    @property
+    def is_available(self) -> bool:
+        # 免费源，无需 key；仅当 akshare 可导入时为可用
+        try:
+            import akshare  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def _do_search(
+        self,
+        query: str,
+        api_key: str,
+        max_results: int,
+        days: int = 7,
+    ) -> "SearchResponse":
+        # 从查询中解析 6 位股票代码（search_stock_news 的 query 必含代码）
+        m = re.search(r"\d{6}", query)
+        if not m:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message="无法从查询中提取 6 位股票代码",
+            )
+        code = m.group(0)
+        try:
+            import akshare as ak
+            df = ak.stock_news_em(symbol=code)
+            if df is None or getattr(df, "empty", True):
+                return SearchResponse(
+                    query=query,
+                    results=[],
+                    provider=self.name,
+                    success=True,
+                )
+            results: List[SearchResult] = []
+            for _, row in df.head(max_results).iterrows():
+                title = str(row.get("新闻标题") or row.get("title") or "").strip()
+                snippet = str(
+                    row.get("新闻内容") or row.get("content") or row.get("摘要") or ""
+                ).strip()
+                pub = str(
+                    row.get("发布时间") or row.get("datetime") or row.get("时间") or ""
+                ).strip()
+                url = str(row.get("新闻链接") or row.get("url") or row.get("链接") or "").strip()
+                source = str(row.get("文章来源") or row.get("source") or "东方财富").strip()
+                if not title and not snippet:
+                    continue
+                results.append(
+                    SearchResult(
+                        title=title,
+                        snippet=snippet[:500],
+                        url=url,
+                        source=source or "东方财富",
+                        published_date=pub or None,
+                    )
+                )
+            return SearchResponse(
+                query=query,
+                results=results,
+                provider=self.name,
+                success=True,
+            )
+        except Exception as e:
+            return SearchResponse(
+                query=query,
+                results=[],
+                provider=self.name,
+                success=False,
+                error_message=f"AkShare 新闻获取失败: {e}",
+            )
+
+    def search(self, query: str, max_results: int = 5, days: int = 7) -> "SearchResponse":
+        # 免 key，直接执行（绕过基类的 api_key 校验）
+        return self._do_search(query, "__akshare_free__", max_results, days=days)
+
+
 class SearchService:
     """
     搜索服务
@@ -2448,6 +2541,11 @@ class SearchService:
         if tavily_keys:
             self._providers.append(TavilySearchProvider(tavily_keys))
             logger.info(f"已配置 Tavily 搜索，共 {len(tavily_keys)} 个 API Key")
+
+        # 2.5 AkShare 免费个股新闻（免 key，作为新闻兜底/补充情报源）
+        if os.getenv("AKSHARE_NEWS_ENABLED", "true").lower() != "false":
+            self._providers.append(AkShareNewsProvider())
+            logger.info("已启用 AkShare 免费个股新闻源（免 key）")
 
         # 3. Brave Search（隐私优先，全球覆盖）
         if brave_keys:
