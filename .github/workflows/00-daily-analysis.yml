@@ -41,7 +41,7 @@ jobs:
       contents: write
     # 配置已硬编码进本文件 / 走 Secrets，无需建同名 Environment。
     # 添加超时限制，防止任务卡死（30 只 ETF 约需 35–40 分钟，留足余量）
-    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '120') }}
+    timeout-minutes: ${{ fromJSON(vars.ANALYSIS_TIMEOUT_MINUTES || '180') }}
     
     steps:
       - name: 随机延迟（避免固定时间访问）
